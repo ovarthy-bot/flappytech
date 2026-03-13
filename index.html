@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Otomasyon Paneli</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Kurumsal Veri Aktarım Aracı</h1>
+            <p>Excel verilerini tarayıcı otomasyonuna dönüştürün.</p>
+        </header>
+
+        <main>
+            <div class="card">
+                <h3>1. Veri Kaynağını Seçin</h3>
+                <input type="file" id="excelInput" accept=".xlsx, .xls">
+                <div id="fileInfo" class="info-text">Henüz dosya seçilmedi.</div>
+            </div>
+
+            <div class="card">
+                <h3>2. İşlemi Başlat</h3>
+                <button id="generateBtn" class="primary-btn">Otomasyon Kodunu Üret</button>
+            </div>
+
+            <div class="card result-card">
+                <h3>3. Kodu Kopyalayın ve Çalıştırın</h3>
+                <p class="step-desc">Hedef siteyi açın, <b>F12</b> (Konsol) sekmesine bu kodu yapıştırıp Enter'a basın.</p>
+                <textarea id="outputScript" readonly placeholder="Kod burada üretilecek..."></textarea>
+                <button id="copyBtn" class="secondary-btn">Kodu Kopyala</button>
+            </div>
+        </main>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
