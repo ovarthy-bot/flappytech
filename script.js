@@ -24,8 +24,8 @@ document.getElementById('generateBtn').addEventListener('click', async () => {
     for (let i = 0; i < rawData.length; i++) {
         const row = rawData[i];
         // Sütun başlıklarını Excel'inize göre güncelleyin
-        const valWO = row["Work Order"] || ""; 
-        const valTC = row["NRC"] || "";
+        const valWO = row["WO"] || ""; 
+        const valTC = row["TASK CARD"] || "";
 
         console.log(\`İşleniyor Satır \${i + 2}: \${valWO}\`);
 
