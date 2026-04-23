@@ -1,39 +1,1063 @@
 <!DOCTYPE html>
 <html lang="tr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web Otomasyon Paneli</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Uçan Teknisyen — Hangar Shift</title>
+<style>
+  :root {
+    --ink: #0a1520;
+    --hazard: #ff3344;
+    --safe: #22dd88;
+    --warn: #ffcc33;
+    --chrome: #c4ccd4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #0a0f1a;
+    font-family: 'Courier New', 'Consolas', monospace;
+    color: white;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .frame {
+    position: relative;
+    width: 100%;
+    max-width: 440px;
+    aspect-ratio: 9 / 16;
+    max-height: 100vh;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 4px #2a2a35,
+      0 0 0 6px #111,
+      0 25px 60px rgba(0,0,0,0.8);
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  .badge {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: #ffcc33;
+    text-shadow: 0 0 4px rgba(255,204,51,0.6);
+    pointer-events: none;
+    z-index: 2;
+    opacity: 0.7;
+  }
+</style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>🚀 Kurumsal Veri Aktarım Aracı</h1>
-            <p>Excel verilerini tarayıcı otomasyonuna dönüştürün.</p>
-        </header>
+<div class="frame">
+  <canvas id="game" width="450" height="800"></canvas>
+  <div class="badge">HANGAR OPS · A320</div>
+</div>
 
-        <main>
-            <div class="card">
-                <h3>1. Veri Kaynağını Seçin</h3>
-                <input type="file" id="excelInput" accept=".xlsx, .xls">
-                <div id="fileInfo" class="info-text">Henüz dosya seçilmedi.</div>
-            </div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
 
-            <div class="card">
-                <h3>2. İşlemi Başlat</h3>
-                <button id="generateBtn" class="primary-btn">Otomasyon Kodunu Üret</button>
-            </div>
+  // ---------- STATE ----------
+  const state = {
+    mode: 'menu',            // menu | playing | gameover
+    score: 0,
+    combo: 0,
+    maxCombo: 0,
+    errors: 0,
+    itemsCollected: 0,
+    frame: 0,
+    speed: 3.2,
+    shake: 0,
+    freeze: 0,               // "STOP WORK" freeze frames
+    bgOffset: 0,
+    supervisorTimer: 300,    // frames until next supervisor visit
+  };
 
-            <div class="card result-card">
-                <h3>3. Kodu Kopyalayın ve Çalıştırın</h3>
-                <p class="step-desc">Hedef siteyi açın, <b>F12</b> (Konsol) sekmesine bu kodu yapıştırıp Enter'a basın.</p>
-                <textarea id="outputScript" readonly placeholder="Kod burada üretilecek..."></textarea>
-                <button id="copyBtn" class="secondary-btn">Kodu Kopyala</button>
-            </div>
-        </main>
-    </div>
-    <script src="script.js"></script>
+  const player = {
+    x: 110, y: H / 2, vy: 0,
+    w: 42, h: 46,
+    gravity: 0.55,
+    jumpV: -9.2,
+    invincible: 0,
+    blur: 0,
+    thrust: 0,               // jetpack flame intensity
+    dead: false,
+  };
+
+  const supervisor = {
+    active: false,
+    mood: 'neutral',         // neutral | angry | happy
+    x: W + 80,
+    y: 120,
+    duration: 0,
+    speaking: '',
+    speakTimer: 0,
+  };
+
+  const obstacles = [];
+  const items = [];
+  const particles = [];
+  const floaters = [];       // floating text feedback
+
+  // ---------- CONTENT: Turkish aviation maintenance humor ----------
+  const OBSTACLES = [
+    { kind: 'wrongAMM',  label: 'AMM Rev A',   sub: 'SUPERSEDED', color: '#ff3344', icon: '📕', msg: 'YANLIŞ AMM!' },
+    { kind: 'wrongTool', label: 'MS Wrench',   sub: 'WRONG P/N',  color: '#ff3344', icon: '🔨', msg: 'YANLIŞ TOOL!' },
+    { kind: 'panel',     label: 'AÇIK PANEL',  sub: 'DANGER',     color: '#ffcc33', icon: '🚧', msg: 'AÇIK PANEL!' },
+    { kind: 'toolbox',   label: 'TOOL BAG',    sub: 'FOD RISK',   color: '#ffcc33', icon: '🧰', msg: 'FOD!' },
+    { kind: 'cable',     label: 'KABLO',       sub: 'TRIP',       color: '#ff9944', icon: '🔌', msg: 'KABLOYA TAKILDIN!' },
+  ];
+
+  const ITEMS = [
+    { kind: 'amm',  label: 'AMM Rev C', sub: 'CURRENT', color: '#22dd88', icon: '📗', msg: 'DOĞRU AMM!',   points: 50 },
+    { kind: 'tool', label: 'Torque Wr', sub: 'CAL OK',  color: '#22dd88', icon: '🔧', msg: 'DOĞRU TOOL!',  points: 30 },
+    { kind: 'ppe',  label: 'PPE',       sub: 'SAFETY',  color: '#55ddff', icon: '⛑️', msg: 'SAFETY FIRST!', points: 25 },
+  ];
+
+  const SUPERVISOR_ANGRY = [
+    'BU AMM DEĞİL!',
+    'TEKRAR KONTROL ET!',
+    'STOP WORK!',
+    'NEREDE PPE?',
+    'FOD TOPLA!',
+  ];
+
+  const SUPERVISOR_HAPPY = [
+    'GOOD JOB!',
+    'TEMİZ İŞ!',
+    'DEVAM ET!',
+    'NICE SHIFT!',
+  ];
+
+  // ---------- INPUT ----------
+  function flap() {
+    if (state.mode === 'menu') { startGame(); return; }
+    if (state.mode === 'gameover') { state.mode = 'menu'; return; }
+    if (player.dead) return;
+    player.vy = player.jumpV;
+    player.thrust = 14;
+    // jetpack particles
+    for (let i = 0; i < 8; i++) {
+      particles.push({
+        x: player.x + 8 + Math.random() * 4,
+        y: player.y + player.h - 4,
+        vx: (Math.random() - 0.5) * 1.5 - 0.5,
+        vy: 1 + Math.random() * 3,
+        life: 18 + Math.random() * 10,
+        maxLife: 28,
+        size: 3 + Math.random() * 3,
+        color: ['#ff5500', '#ff9900', '#ffdd00', '#ffffff'][Math.floor(Math.random() * 4)],
+      });
+    }
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+      e.preventDefault();
+      flap();
+    }
+  });
+  canvas.addEventListener('mousedown', (e) => { e.preventDefault(); flap(); });
+  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); flap(); }, { passive: false });
+
+  // ---------- GAME FLOW ----------
+  function startGame() {
+    state.mode = 'playing';
+    state.score = 0;
+    state.combo = 0;
+    state.maxCombo = 0;
+    state.errors = 0;
+    state.itemsCollected = 0;
+    state.speed = 3.2;
+    state.shake = 0;
+    state.freeze = 0;
+    state.supervisorTimer = 400;
+    obstacles.length = 0;
+    items.length = 0;
+    particles.length = 0;
+    floaters.length = 0;
+    player.y = H / 2;
+    player.vy = 0;
+    player.invincible = 60;
+    player.blur = 0;
+    player.dead = false;
+    supervisor.active = false;
+    supervisor.x = W + 80;
+  }
+
+  function spawn() {
+    // Decision gate: rare — two items, one good one bad, same column
+    if (Math.random() < 0.18) {
+      const good = ITEMS[Math.floor(Math.random() * ITEMS.length)];
+      // usually paired with a similar-looking wrong version
+      const bad = good.kind === 'amm'
+        ? OBSTACLES[0] // Wrong AMM
+        : good.kind === 'tool' ? OBSTACLES[1] // Wrong tool
+        : OBSTACLES[2]; // panel
+      const topY = 60 + Math.random() * (H - 300);
+      const gap = 150 + Math.random() * 40;
+      const goodOnTop = Math.random() < 0.5;
+      items.push({
+        x: W + 20, y: goodOnTop ? topY : topY + gap,
+        w: 48, h: 54, def: good, kind: 'good',
+      });
+      obstacles.push({
+        x: W + 20, y: goodOnTop ? topY + gap : topY,
+        w: 48, h: 54, def: bad, kind: 'bad',
+      });
+      return;
+    }
+
+    // Regular single spawn
+    const r = Math.random();
+    const y = 70 + Math.random() * (H - 220);
+    if (r < 0.55) {
+      const def = ITEMS[Math.floor(Math.random() * ITEMS.length)];
+      items.push({ x: W + 20, y, w: 48, h: 54, def, kind: 'good' });
+    } else {
+      const def = OBSTACLES[Math.floor(Math.random() * OBSTACLES.length)];
+      obstacles.push({ x: W + 20, y, w: 50, h: 56, def, kind: 'bad' });
+    }
+  }
+
+  function hit(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x &&
+           a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  function playerBox() {
+    return { x: player.x + 6, y: player.y + 6, w: player.w - 12, h: player.h - 12 };
+  }
+
+  function floater(text, color, x, y) {
+    floaters.push({ text, color, x, y, vy: -1.3, life: 45 });
+  }
+
+  function handleObstacleHit(o) {
+    if (player.invincible > 0) return;
+    state.errors++;
+    state.combo = 0;
+    state.freeze = 10;
+    state.shake = 14;
+    player.blur = 40;
+    player.vy = -4;
+    player.invincible = 40;
+    floater('❌ ' + o.def.msg, '#ff4455', o.x, o.y);
+    if (supervisor.active && supervisor.mood === 'angry') {
+      state.score = Math.max(0, state.score - 30);
+      floater('-30 SUPERVISOR!', '#ff8800', o.x, o.y - 20);
+    }
+    // STOP WORK shake particles
+    for (let i = 0; i < 12; i++) {
+      particles.push({
+        x: o.x + o.w/2, y: o.y + o.h/2,
+        vx: (Math.random() - 0.5) * 6,
+        vy: (Math.random() - 0.5) * 6 - 2,
+        life: 30, maxLife: 30,
+        size: 2 + Math.random() * 3,
+        color: '#ff4455',
+      });
+    }
+  }
+
+  function handleItemPickup(it) {
+    state.combo++;
+    if (state.combo > state.maxCombo) state.maxCombo = state.combo;
+    state.itemsCollected++;
+    let pts = it.def.points * Math.max(1, Math.floor(state.combo / 2) + 1);
+    if (supervisor.active && supervisor.mood === 'happy') {
+      pts = Math.floor(pts * 1.5);
+    }
+    state.score += pts;
+    floater(`+${pts}${state.combo > 1 ? ' x' + state.combo : ''}`, '#22ffaa', it.x, it.y);
+
+    // 5-combo perfect moment: invincibility + sparkles
+    if (state.combo === 5) {
+      player.invincible = 90;
+      floater('⚡ SMOOTH WORKFLOW ⚡', '#ffee55', W/2 - 80, H/2);
+    }
+    for (let i = 0; i < 8; i++) {
+      particles.push({
+        x: it.x + it.w/2, y: it.y + it.h/2,
+        vx: (Math.random() - 0.5) * 3,
+        vy: (Math.random() - 0.5) * 3 - 1,
+        life: 25, maxLife: 25,
+        size: 2 + Math.random() * 2,
+        color: '#66ffaa',
+      });
+    }
+  }
+
+  function updateSupervisor() {
+    state.supervisorTimer--;
+    if (!supervisor.active && state.supervisorTimer <= 0) {
+      supervisor.active = true;
+      supervisor.duration = 360;
+      // mood based on recent performance
+      if (state.errors >= 2 || state.combo === 0) supervisor.mood = 'angry';
+      else if (state.combo >= 3 || state.itemsCollected >= 5) supervisor.mood = 'happy';
+      else supervisor.mood = 'neutral';
+      supervisor.x = W + 80;
+      const lines = supervisor.mood === 'angry' ? SUPERVISOR_ANGRY : SUPERVISOR_HAPPY;
+      supervisor.speaking = lines[Math.floor(Math.random() * lines.length)];
+      supervisor.speakTimer = 120;
+    }
+    if (supervisor.active) {
+      const targetX = W - 110;
+      supervisor.x += (targetX - supervisor.x) * 0.06;
+      supervisor.y = 110 + Math.sin(state.frame * 0.08) * 4;
+      supervisor.duration--;
+      supervisor.speakTimer--;
+      if (supervisor.duration <= 0) {
+        supervisor.active = false;
+        state.supervisorTimer = 500 + Math.random() * 200;
+      }
+    }
+  }
+
+  // ---------- UPDATE ----------
+  function update() {
+    state.frame++;
+
+    if (state.mode !== 'playing') {
+      // drift particles even on menu
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+      state.bgOffset += 0.5;
+      return;
+    }
+
+    if (state.freeze > 0) { state.freeze--; return; }
+    if (state.shake > 0) state.shake--;
+    if (player.invincible > 0) player.invincible--;
+    if (player.blur > 0) player.blur--;
+    if (player.thrust > 0) player.thrust--;
+
+    // physics
+    player.vy += player.gravity;
+    player.y += player.vy;
+
+    // boundaries
+    if (player.y < 0) { player.y = 0; player.vy = 0; }
+    if (player.y + player.h > H - 60) {
+      // hit apron
+      player.y = H - 60 - player.h;
+      if (!player.dead) {
+        state.errors = 99; // instant shift end
+        player.dead = true;
+        state.shake = 20;
+        state.mode = 'gameover';
+      }
+    }
+
+    // distance & passive score
+    state.bgOffset += state.speed;
+    state.score += 0.08;
+
+    // speed ramp
+    if (state.frame % 600 === 0) state.speed = Math.min(6.5, state.speed + 0.35);
+
+    // spawn
+    const spawnInterval = Math.max(45, 110 - Math.floor(state.speed * 6));
+    if (state.frame % spawnInterval === 0) spawn();
+
+    // supervisor
+    updateSupervisor();
+
+    // move obstacles
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      obstacles[i].x -= state.speed;
+      if (obstacles[i].x + obstacles[i].w < -20) obstacles.splice(i, 1);
+    }
+    for (let i = items.length - 1; i >= 0; i--) {
+      items[i].x -= state.speed;
+      if (items[i].x + items[i].w < -20) items.splice(i, 1);
+    }
+
+    // particles
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy;
+      p.vy += 0.15;
+      p.life--;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+
+    // floaters
+    for (let i = floaters.length - 1; i >= 0; i--) {
+      floaters[i].y += floaters[i].vy;
+      floaters[i].life--;
+      if (floaters[i].life <= 0) floaters.splice(i, 1);
+    }
+
+    // collisions
+    const pb = playerBox();
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      if (hit(pb, obstacles[i])) {
+        handleObstacleHit(obstacles[i]);
+        obstacles.splice(i, 1);
+        if (state.errors >= 3) {
+          player.dead = true;
+          state.mode = 'gameover';
+        }
+      }
+    }
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (hit(pb, items[i])) {
+        handleItemPickup(items[i]);
+        items.splice(i, 1);
+      }
+    }
+  }
+
+  // ---------- DRAW ----------
+  function drawHangar() {
+    // Sky / hangar interior gradient
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a3e55');
+    grad.addColorStop(0.4, '#4a6a85');
+    grad.addColorStop(0.85, '#6a8aa0');
+    grad.addColorStop(1, '#8a9aa8');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Ceiling trusses
+    ctx.fillStyle = '#1a2330';
+    ctx.fillRect(0, 0, W, 40);
+    ctx.strokeStyle = '#0a1018';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 6; i++) {
+      const x = (i * 90) - ((state.bgOffset * 0.4) % 90);
+      ctx.beginPath();
+      ctx.moveTo(x, 40); ctx.lineTo(x + 45, 0); ctx.lineTo(x + 90, 40);
+      ctx.stroke();
+    }
+
+    // Hanging work lights
+    for (let i = 0; i < 5; i++) {
+      const x = (i * 100 + 50) - ((state.bgOffset * 0.4) % 100);
+      ctx.strokeStyle = '#333';
+      ctx.beginPath();
+      ctx.moveTo(x, 40); ctx.lineTo(x, 60);
+      ctx.stroke();
+      // lamp glow
+      const glowGrad = ctx.createRadialGradient(x, 70, 2, x, 70, 40);
+      glowGrad.addColorStop(0, 'rgba(255, 240, 180, 0.6)');
+      glowGrad.addColorStop(1, 'rgba(255, 240, 180, 0)');
+      ctx.fillStyle = glowGrad;
+      ctx.beginPath();
+      ctx.arc(x, 70, 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffeeaa';
+      ctx.beginPath();
+      ctx.arc(x, 66, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Parallax distant aircraft tail silhouettes
+    ctx.fillStyle = 'rgba(40, 55, 75, 0.7)';
+    for (let i = 0; i < 4; i++) {
+      const x = (i * 220) - ((state.bgOffset * 0.3) % 220);
+      // Vertical stabilizer shape
+      ctx.beginPath();
+      ctx.moveTo(x, H - 120);
+      ctx.lineTo(x + 20, H - 300);
+      ctx.lineTo(x + 80, H - 300);
+      ctx.lineTo(x + 90, H - 120);
+      ctx.closePath();
+      ctx.fill();
+      // airline livery stripe
+      ctx.fillStyle = 'rgba(80, 130, 170, 0.5)';
+      ctx.fillRect(x + 25, H - 220, 55, 8);
+      ctx.fillStyle = 'rgba(40, 55, 75, 0.7)';
+    }
+
+    // Apron (floor)
+    ctx.fillStyle = '#3a3e44';
+    ctx.fillRect(0, H - 60, W, 60);
+    // yellow safety line
+    ctx.fillStyle = '#e8c025';
+    ctx.fillRect(0, H - 60, W, 4);
+    // painted dashes
+    ctx.fillStyle = '#d4d4d4';
+    for (let i = 0; i < 12; i++) {
+      const x = (i * 60) - (state.bgOffset % 60);
+      ctx.fillRect(x, H - 30, 30, 4);
+    }
+    // bolts
+    ctx.fillStyle = '#20242a';
+    for (let i = 0; i < 15; i++) {
+      const x = (i * 40 + 20) - (state.bgOffset % 40);
+      ctx.beginPath();
+      ctx.arc(x, H - 15, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawPlayer() {
+    ctx.save();
+    if (player.invincible > 0 && Math.floor(player.invincible / 4) % 2 === 0 && !player.dead) {
+      ctx.globalAlpha = 0.5;
+    }
+
+    const cx = player.x + player.w / 2;
+    const cy = player.y + player.h / 2;
+    ctx.translate(cx, cy);
+    const tilt = Math.max(-0.5, Math.min(0.9, player.vy * 0.06));
+    ctx.rotate(tilt);
+
+    // Jetpack flame (behind body)
+    if (player.thrust > 0 || state.mode === 'playing') {
+      const intensity = player.thrust / 14;
+      const flameLen = 8 + intensity * 18;
+      const flameGrad = ctx.createLinearGradient(-20, 16, -20, 16 + flameLen);
+      flameGrad.addColorStop(0, '#ffff66');
+      flameGrad.addColorStop(0.5, '#ff8800');
+      flameGrad.addColorStop(1, 'rgba(255, 60, 0, 0)');
+      ctx.fillStyle = flameGrad;
+      ctx.beginPath();
+      ctx.moveTo(-22, 14);
+      ctx.quadraticCurveTo(-17, 16 + flameLen, -13, 14);
+      ctx.fill();
+      // tool bag flame too
+      ctx.beginPath();
+      ctx.moveTo(-13, 14);
+      ctx.quadraticCurveTo(-8, 16 + flameLen * 0.7, -4, 14);
+      ctx.fill();
+    }
+
+    // Jetpack tank
+    ctx.fillStyle = '#c44';
+    ctx.fillRect(-player.w/2 - 4, -10, 10, 24);
+    ctx.fillStyle = '#822';
+    ctx.fillRect(-player.w/2 - 4, -10, 10, 4);
+
+    // Hi-vis vest / body
+    ctx.fillStyle = '#ff9922';
+    ctx.fillRect(-player.w/2 + 4, -player.h/2 + 10, player.w - 8, player.h - 16);
+    // reflective stripes
+    ctx.fillStyle = '#ddddee';
+    ctx.fillRect(-player.w/2 + 4, -player.h/2 + 20, player.w - 8, 3);
+    ctx.fillRect(-player.w/2 + 4, -player.h/2 + 30, player.w - 8, 3);
+
+    // Head
+    ctx.fillStyle = '#f4c28a';
+    ctx.beginPath();
+    ctx.arc(0, -player.h/2 + 6, 11, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Headset
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, -player.h/2 + 6, 11, Math.PI * 0.2, Math.PI * 0.8);
+    ctx.stroke();
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-13, -player.h/2 + 4, 4, 6);
+    ctx.fillRect(9, -player.h/2 + 4, 4, 6);
+
+    // Face
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-5, -player.h/2 + 4, 2, 2);
+    ctx.fillRect(3, -player.h/2 + 4, 2, 2);
+    // slight grin or oh-face based on vy
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    if (player.vy < -2) {
+      ctx.arc(0, -player.h/2 + 9, 2, 0, Math.PI);
+    } else {
+      ctx.moveTo(-2, -player.h/2 + 10);
+      ctx.lineTo(2, -player.h/2 + 10);
+    }
+    ctx.stroke();
+
+    // Tool bag in hand
+    ctx.fillStyle = '#4a3a2a';
+    ctx.fillRect(player.w/2 - 6, -2, 12, 16);
+    ctx.fillStyle = '#8a6a4a';
+    ctx.fillRect(player.w/2 - 6, -2, 12, 3);
+
+    ctx.restore();
+  }
+
+  function drawThing(t) {
+    // A little "inspection card" look — colored rectangle with icon + label
+    ctx.save();
+
+    const bob = Math.sin((state.frame + t.x) * 0.05) * 2;
+
+    // glow
+    ctx.shadowColor = t.def.color;
+    ctx.shadowBlur = 12;
+
+    // card background
+    ctx.fillStyle = '#f4f1e8';
+    ctx.fillRect(t.x, t.y + bob, t.w, t.h);
+
+    // colored header strip
+    ctx.fillStyle = t.def.color;
+    ctx.fillRect(t.x, t.y + bob, t.w, 14);
+
+    ctx.shadowBlur = 0;
+
+    // border
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(t.x, t.y + bob, t.w, t.h);
+
+    // icon
+    ctx.font = '24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(t.def.icon, t.x + t.w/2, t.y + bob + 40);
+
+    // label
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 8px "Courier New", monospace';
+    ctx.fillText(t.def.label, t.x + t.w/2, t.y + bob + 50);
+
+    // corner status dot
+    ctx.fillStyle = t.kind === 'good' ? '#22dd88' : '#ff3344';
+    ctx.beginPath();
+    ctx.arc(t.x + t.w - 6, t.y + bob + 6, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+    ctx.textAlign = 'left';
+  }
+
+  function drawSupervisor() {
+    if (!supervisor.active && supervisor.x > W + 50) return;
+    const sx = supervisor.x, sy = supervisor.y;
+    ctx.save();
+
+    // speech bubble
+    if (supervisor.speakTimer > 0 && supervisor.speaking) {
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 2;
+      const text = supervisor.speaking;
+      ctx.font = 'bold 11px "Courier New", monospace';
+      const tw = ctx.measureText(text).width + 16;
+      const bx = sx - tw - 6, by = sy - 30;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, tw, 24, 6);
+      ctx.fill();
+      ctx.stroke();
+      // tail
+      ctx.beginPath();
+      ctx.moveTo(bx + tw - 8, by + 24);
+      ctx.lineTo(bx + tw + 2, by + 30);
+      ctx.lineTo(bx + tw - 16, by + 24);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#111';
+      ctx.textAlign = 'center';
+      ctx.fillText(text, bx + tw/2, by + 16);
+      ctx.textAlign = 'left';
+    }
+
+    // Supervisor body (bigger, suit-and-tie look)
+    // Head
+    ctx.fillStyle = '#e8b88a';
+    ctx.beginPath();
+    ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Body (shirt + tie)
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(sx - 16, sy + 10, 32, 30);
+    ctx.fillStyle = supervisor.mood === 'angry' ? '#cc2233' : '#2266cc';
+    ctx.fillRect(sx - 3, sy + 10, 6, 22);
+    ctx.beginPath();
+    ctx.moveTo(sx - 3, sy + 32);
+    ctx.lineTo(sx + 3, sy + 32);
+    ctx.lineTo(sx, sy + 40);
+    ctx.closePath();
+    ctx.fill();
+
+    // Hair / mood hint
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(sx, sy - 8, 14, Math.PI, 0);
+    ctx.fill();
+
+    // Eyes (angry = furrowed)
+    ctx.fillStyle = '#111';
+    if (supervisor.mood === 'angry') {
+      ctx.fillRect(sx - 8, sy - 2, 6, 2);
+      ctx.fillRect(sx + 2, sy - 2, 6, 2);
+      // angry eyebrows
+      ctx.beginPath();
+      ctx.moveTo(sx - 9, sy - 5); ctx.lineTo(sx - 2, sy - 2);
+      ctx.moveTo(sx + 9, sy - 5); ctx.lineTo(sx + 2, sy - 2);
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // frown
+      ctx.beginPath();
+      ctx.arc(sx, sy + 8, 3, Math.PI, 0);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(sx - 5, sy - 1, 1.5, 0, Math.PI * 2);
+      ctx.arc(sx + 5, sy - 1, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      // smile
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy + 4, 4, 0, Math.PI);
+      ctx.stroke();
+    }
+
+    // ID badge
+    ctx.fillStyle = supervisor.mood === 'angry' ? '#ffcc33' : '#88cc44';
+    ctx.fillRect(sx + 5, sy + 16, 8, 10);
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx + 5, sy + 16, 8, 10);
+
+    ctx.restore();
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawFloaters() {
+    ctx.textAlign = 'center';
+    for (const f of floaters) {
+      ctx.globalAlpha = Math.min(1, f.life / 20);
+      ctx.font = 'bold 14px "Courier New", monospace';
+      ctx.fillStyle = '#111';
+      ctx.fillText(f.text, f.x + 1, f.y + 1);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+  }
+
+  function drawHUD() {
+    // Top HUD panel
+    ctx.fillStyle = 'rgba(10, 20, 32, 0.75)';
+    ctx.fillRect(8, 8, 170, 70);
+    ctx.strokeStyle = '#ffcc33';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(8, 8, 170, 70);
+
+    ctx.fillStyle = '#ffcc33';
+    ctx.font = 'bold 10px "Courier New", monospace';
+    ctx.fillText('SHIFT LOG', 16, 22);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.fillText(`SKOR: ${Math.floor(state.score)}`, 16, 42);
+
+    ctx.font = 'bold 11px "Courier New", monospace';
+    ctx.fillStyle = state.combo > 0 ? '#22ffaa' : '#888';
+    ctx.fillText(`COMBO x${state.combo}`, 16, 58);
+
+    ctx.fillStyle = state.errors >= 2 ? '#ff4455' : '#ffaa44';
+    ctx.fillText(`HATA ${state.errors}/3`, 16, 72);
+
+    // Supervisor indicator
+    if (supervisor.active) {
+      ctx.fillStyle = supervisor.mood === 'angry'
+        ? 'rgba(200, 40, 60, 0.9)'
+        : 'rgba(40, 160, 80, 0.9)';
+      ctx.fillRect(W - 140, 8, 132, 26);
+      ctx.strokeStyle = '#fff';
+      ctx.strokeRect(W - 140, 8, 132, 26);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 11px "Courier New", monospace';
+      ctx.fillText(
+        supervisor.mood === 'angry' ? '⚠ SUPERVISOR WATCH' : '✓ SUPERVISOR OK',
+        W - 132, 25
+      );
+    }
+  }
+
+  function drawMenu() {
+    // Dim
+    ctx.fillStyle = 'rgba(5, 10, 20, 0.72)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Title
+    ctx.textAlign = 'center';
+    // Title shadow
+    ctx.fillStyle = '#ff6600';
+    ctx.font = 'bold 40px "Courier New", monospace';
+    ctx.fillText('UÇAN TEKNİSYEN', W/2 + 3, H/2 - 107);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('UÇAN TEKNİSYEN', W/2, H/2 - 110);
+
+    ctx.font = '12px "Courier New", monospace';
+    ctx.fillStyle = '#ffcc33';
+    ctx.fillText('— HANGAR SHIFT SIMULATOR —', W/2, H/2 - 85);
+
+    // Decorative box
+    ctx.strokeStyle = '#ffcc33';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(40, H/2 - 60, W - 80, 180);
+    ctx.fillStyle = '#0a1520';
+    ctx.fillRect(40, H/2 - 60, W - 80, 180);
+    ctx.strokeRect(40, H/2 - 60, W - 80, 180);
+
+    ctx.fillStyle = '#ffcc33';
+    ctx.font = 'bold 11px "Courier New", monospace';
+    ctx.fillText('⎯⎯ GÖREV BRİFİNG ⎯⎯', W/2, H/2 - 40);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '11px "Courier New", monospace';
+    const lines = [
+      '📗 Doğru AMM, tool, PPE topla',
+      '📕 Yanlış revision\'dan KAÇIN',
+      '🧰 Tool bag & açık panele dikkat',
+      '⚡ 5 combo = invincible boost',
+      '👔 Supervisor bakıyor? Hata =  x2',
+      '',
+      '3 HATA → SHIFT BİTER',
+    ];
+    lines.forEach((l, i) => {
+      ctx.fillText(l, W/2, H/2 - 15 + i * 17);
+    });
+
+    // Start prompt (pulsing)
+    const pulse = 0.6 + 0.4 * Math.sin(state.frame * 0.15);
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = '#22ffaa';
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.fillText('▶ TIKLA / SPACE / DOKUN', W/2, H/2 + 160);
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = '#888';
+    ctx.font = '9px "Courier New", monospace';
+    ctx.fillText('v1.0 · MRO SIM', W/2, H - 20);
+
+    ctx.textAlign = 'left';
+  }
+
+  function drawGameOver() {
+    ctx.fillStyle = 'rgba(5, 10, 20, 0.85)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+
+    // "SHIFT BİTTİ" stamp
+    ctx.save();
+    ctx.translate(W/2, 120);
+    ctx.rotate(-0.08);
+    ctx.strokeStyle = '#ff3344';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(-140, -30, 280, 60);
+    ctx.fillStyle = '#ff3344';
+    ctx.font = 'bold 32px "Courier New", monospace';
+    ctx.fillText('SHIFT BİTTİ', 0, 10);
+    ctx.font = 'bold 10px "Courier New", monospace';
+    ctx.fillText('— STOP WORK ORDER —', 0, 25);
+    ctx.restore();
+
+    // Report card
+    ctx.fillStyle = '#f4f1e8';
+    ctx.fillRect(40, 200, W - 80, 320);
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(40, 200, W - 80, 320);
+
+    // Header band
+    ctx.fillStyle = '#1a3050';
+    ctx.fillRect(40, 200, W - 80, 32);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.fillText('VARDİYA RAPORU · TASK CARD', W/2, 220);
+
+    // Dotted separator
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(60, 250); ctx.lineTo(W - 60, 250);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'left';
+    ctx.font = '13px "Courier New", monospace';
+    const rows = [
+      ['FINAL SKOR',       Math.floor(state.score).toString()],
+      ['TOPLANAN ITEM',    state.itemsCollected.toString()],
+      ['EN YÜKSEK COMBO',  'x' + state.maxCombo],
+      ['HATA SAYISI',      (state.errors >= 99 ? 'FLOOR IMPACT' : state.errors).toString()],
+    ];
+    rows.forEach((r, i) => {
+      const y = 275 + i * 28;
+      ctx.fillStyle = '#666';
+      ctx.fillText(r[0], 60, y);
+      ctx.fillStyle = '#111';
+      ctx.textAlign = 'right';
+      ctx.font = 'bold 13px "Courier New", monospace';
+      ctx.fillText(r[1], W - 60, y);
+      ctx.textAlign = 'left';
+      ctx.font = '13px "Courier New", monospace';
+    });
+
+    // Rating stamp
+    let rating, ratingColor;
+    if (state.errors === 0 && state.itemsCollected >= 10) {
+      rating = '⭐ PERFECT SHIFT ⭐'; ratingColor = '#22aa55';
+    } else if (state.errors <= 1 && state.maxCombo >= 5) {
+      rating = '✓ TEMİZ VARDİYA'; ratingColor = '#2266aa';
+    } else if (state.errors >= 3) {
+      rating = '✗ SUPERVISOR ÜZGÜN'; ratingColor = '#cc2233';
+    } else if (state.errors >= 99) {
+      rating = '💥 AİRON HIT'; ratingColor = '#cc2233';
+    } else {
+      rating = '◦ ORTA VARDİYA'; ratingColor = '#aa7722';
+    }
+
+    ctx.save();
+    ctx.translate(W/2, 420);
+    ctx.rotate(0.05);
+    ctx.strokeStyle = ratingColor;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(-110, -20, 220, 40);
+    ctx.fillStyle = ratingColor;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillText(rating, 0, 5);
+    ctx.restore();
+
+    // Signature line
+    ctx.strokeStyle = '#222';
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.moveTo(70, 485); ctx.lineTo(W - 70, 485);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#666';
+    ctx.font = '9px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('IMZA / SUPERVISOR', W/2, 500);
+
+    // Continue prompt
+    const pulse = 0.6 + 0.4 * Math.sin(state.frame * 0.15);
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = '#22ffaa';
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillText('▶ TIKLA — YENİ VARDİYA', W/2, H - 80);
+    ctx.globalAlpha = 1;
+
+    ctx.textAlign = 'left';
+  }
+
+  function render() {
+    ctx.save();
+
+    // screen shake
+    if (state.shake > 0) {
+      const dx = (Math.random() - 0.5) * state.shake;
+      const dy = (Math.random() - 0.5) * state.shake;
+      ctx.translate(dx, dy);
+    }
+
+    drawHangar();
+
+    // distant particles for ambience
+    drawParticles();
+
+    // items and obstacles
+    for (const o of obstacles) drawThing(o);
+    for (const it of items) drawThing(it);
+
+    drawSupervisor();
+
+    drawPlayer();
+
+    drawFloaters();
+
+    ctx.restore();
+
+    // Red flash on blur
+    if (player.blur > 0) {
+      ctx.fillStyle = `rgba(255, 40, 60, ${(player.blur / 40) * 0.35})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // Freeze overlay ("STOP WORK")
+    if (state.freeze > 0) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.save();
+      ctx.translate(W/2, H/2);
+      ctx.rotate(-0.12);
+      ctx.strokeStyle = '#ff3344';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(-140, -40, 280, 80);
+      ctx.fillStyle = '#ff3344';
+      ctx.font = 'bold 36px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('STOP WORK', 0, 12);
+      ctx.textAlign = 'left';
+      ctx.restore();
+    }
+
+    if (state.mode === 'playing') drawHUD();
+    if (state.mode === 'menu') drawMenu();
+    if (state.mode === 'gameover') drawGameOver();
+  }
+
+  function loop() {
+    update();
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // Prime some particles for ambient feel on menu
+  for (let i = 0; i < 10; i++) {
+    particles.push({
+      x: Math.random() * W, y: Math.random() * H,
+      vx: -0.2, vy: -0.1 + Math.random() * 0.2,
+      life: 200, maxLife: 200,
+      size: 1,
+      color: 'rgba(255,255,255,0.2)',
+    });
+  }
+
+  loop();
+})();
+</script>
 </body>
 </html>
